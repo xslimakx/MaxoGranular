@@ -47,7 +47,7 @@ pub fn src_level(cx: &Cx, s: usize) -> f32 {
 fn paint_knob(ui: &Ui, tex: &Tex, c: Pos2, r: f32, disp: f32, tint: Color32, bipolar: bool, hot: bool) {
     let p = ui.painter();
     // dial print
-    let rt = r + 3.5;
+    let rt = r + 4.5;
     for i in 0..=10 {
         let t = i as f32 / 10.0;
         let long = i == 0 || i == 10 || (bipolar && i == 5);
@@ -184,20 +184,24 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
     // modulation rings + the live value
     if !mods.is_empty() {
         let p = ui.painter();
-        for (k, (_, m)) in mods.iter().take(3).enumerate() {
-            // inside the dial print, so the rings never reach into the neighbours
-            let rad = r + 5.5 - k as f32 * 2.6;
+        // a thin light ring in the gap between the knob and its dial print (several modulations
+        // share it: the focused one on top)
+        let mut order: Vec<&(usize, ModSlot)> = mods.iter().collect();
+        order.sort_by_key(|(_, m)| focus == Some((m.src, m.dst)));
+        for (_, m) in order.into_iter().rev().take(3).rev().map(|x| ((), *x)) {
+            let m = &m.1;
+            let rad = r + 2.2;
             let t1 = (disp + m.amount).clamp(0.0, 1.0);
             let col = SRC_COL[m.src as usize];
             let pts = arc(c, rad, disp, t1);
             let foc = focus == Some((m.src, m.dst));
-            p.add(Shape::line(pts.clone(), PathStroke::new(4.5f32, add(col, if foc { 0.28 } else { 0.16 }))));
-            p.add(Shape::line(pts, PathStroke::new(1.8f32, add(col, 0.95))));
+            p.add(Shape::line(pts.clone(), PathStroke::new(3.2f32, add(col, if foc { 0.22 } else { 0.12 }))));
+            p.add(Shape::line(pts, PathStroke::new(1.6f32, add(col, 0.95))));
         }
         let lv = cx.live[d];
-        let q = on_ring(c, r + 5.5, lv);
-        glow(p, tex, q, 7.0, Color32::WHITE, 0.55);
-        p.circle_filled(q, 1.8, Color32::from_rgb(255, 250, 235));
+        let q = on_ring(c, r + 2.2, lv);
+        glow(p, tex, q, 5.0, Color32::WHITE, 0.45);
+        p.circle_filled(q, 1.5, Color32::from_rgb(255, 250, 235));
     }
 
     // label, or the value while touching it
