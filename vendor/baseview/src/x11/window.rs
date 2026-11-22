@@ -301,6 +301,15 @@ impl<'a> Window<'a> {
             &[xcb_connection.atoms.WM_DELETE_WINDOW],
         )?;
 
+        // accept files dragged from the desktop (XDND version 5)
+        xcb_connection.conn.change_property32(
+            PropMode::REPLACE,
+            window_id,
+            xcb_connection.atoms.XdndAware,
+            AtomEnum::ATOM,
+            &[5],
+        )?;
+
         xcb_connection.conn.flush()?;
 
         // TODO: These APIs could use a couple tweaks now that everything is internal and there is

@@ -175,7 +175,7 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
         if can_mod {
             let over = ui.input(|i| i.pointer.hover_pos()).map(|q| hit.contains(q)).unwrap_or(false);
             let pulse = 0.5 + 0.5 * ((cx.now * 6.0) as f32).sin();
-            glow(ui.painter(), tex, c, r * 2.2, SRC_COL[cb.src], if over { 0.55 } else { 0.12 + 0.08 * pulse });
+            glow(ui.painter(), tex, c, r * 1.9, SRC_COL[cb.src], if over { 0.55 } else { 0.12 + 0.08 * pulse });
         }
     }
 
@@ -185,7 +185,8 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
     if !mods.is_empty() {
         let p = ui.painter();
         for (k, (_, m)) in mods.iter().take(3).enumerate() {
-            let rad = r + 11.0 + k as f32 * 3.2;
+            // inside the dial print, so the rings never reach into the neighbours
+            let rad = r + 5.5 - k as f32 * 2.6;
             let t1 = (disp + m.amount).clamp(0.0, 1.0);
             let col = SRC_COL[m.src as usize];
             let pts = arc(c, rad, disp, t1);
@@ -194,7 +195,7 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
             p.add(Shape::line(pts, PathStroke::new(1.8f32, add(col, 0.95))));
         }
         let lv = cx.live[d];
-        let q = on_ring(c, r + 11.0, lv);
+        let q = on_ring(c, r + 5.5, lv);
         glow(p, tex, q, 7.0, Color32::WHITE, 0.55);
         p.circle_filled(q, 1.8, Color32::from_rgb(255, 250, 235));
     }
@@ -391,6 +392,3 @@ pub fn cables(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex) {
     let _ = CornerRadius::ZERO;
 }
 
-pub fn src_count() -> usize {
-    N_SRC
-}

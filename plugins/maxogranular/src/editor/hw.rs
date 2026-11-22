@@ -334,7 +334,8 @@ pub fn stepper(ui: &mut Ui, rect: Rect, id: &str, names: &[String], cur: usize, 
         ui.memory_mut(|m| m.toggle_popup(popup));
     }
     egui::popup::popup_below_widget(ui, popup, &resp, egui::PopupCloseBehavior::CloseOnClick, |ui| {
-        ui.set_min_width(mid.width().max(130.0));
+        ui.set_min_width(mid.width().max(150.0));
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
         egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
             for (i, nm) in names.iter().enumerate() {
                 if let Some(h) = nm.strip_prefix("──") {

@@ -19,6 +19,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 dirs = "6"
 hound = "3"
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "aiff", "vorbis", "ogg", "wav", "pcm", "aac", "isomp4", "adpcm"] }
 realfft = "3"
 
 [features]
@@ -28,3 +29,7 @@ standalone = ["nih_plug/standalone"]
 name = "maxogranular"
 path = "src/main.rs"
 required-features = ["standalone"]
+
+# the file dialog: native on Windows / macOS (Linux asks zenity / kdialog, see editor)
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rfd = { version = "0.15", default-features = false }

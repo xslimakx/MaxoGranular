@@ -52,7 +52,7 @@ impl WindowInfo {
 }
 
 /// A point in logical coordinates
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Default)]
 pub struct Point {
     pub x: f64,
     pub y: f64,

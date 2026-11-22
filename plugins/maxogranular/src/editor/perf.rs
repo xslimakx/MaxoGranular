@@ -20,10 +20,15 @@ fn wheel(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, i: usize, slot: Rect, lab
         let dv = -resp.drag_delta().y / 70.0;
         v = if i == 0 { (v + dv).clamp(-1.0, 1.0) } else { (v + dv * 0.5).clamp(0.0, 1.0) };
     } else if i == 0 {
-        // spring back to the middle
-        v *= (-14.0 * cx.dt).exp();
-        if v.abs() < 1e-3 {
-            v = 0.0;
+        // spring back to the middle, or show what a MIDI pitch bend does
+        if v != 0.0 {
+            v *= (-14.0 * cx.dt).exp();
+            if v.abs() < 1e-3 {
+                v = 0.0;
+            }
+        } else {
+            let eng = cx.shared.bend.load(Ordering::Relaxed);
+            g.wheel_roll[0] += (eng - g.wheel_roll[0]) * (1.0 - (-30.0 * cx.dt).exp());
         }
     } else {
         // MIDI CC1 moves it too
@@ -32,6 +37,7 @@ fn wheel(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, i: usize, slot: Rect, lab
             v = eng;
         }
     }
+    let midi_bend = i == 0 && v == 0.0 && g.wheel[0] == 0.0;
     if v != g.wheel[i] {
         g.wheel[i] = v;
         if i == 0 {
@@ -42,6 +48,10 @@ fn wheel(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, i: usize, slot: Rect, lab
         cx.shared.ui_ctl.fetch_add(1, Ordering::AcqRel);
     }
     // rubber surface scrolls with the value, marker line on the cylinder
+    let v = if midi_bend { g.wheel_roll[0] } else { v };
+    if i == 0 && !midi_bend {
+        g.wheel_roll[0] = v;
+    }
     let phi = if i == 0 { v * 0.9 } else { (v - 0.5) * 1.8 };
     let off = -phi / (2.0 * std::f32::consts::PI) * 1.9;
     sprite_uv(&p, &tex.wheel_rubber, rub, Rect::from_min_max(Pos2::new(0.0, off), Pos2::new(1.0, off + 0.66)), Color32::WHITE);
@@ -202,6 +212,58 @@ pub fn keyboard(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex) {
                 let led = Pos2::new(r.center().x, bed.top() + 3.5);
                 p.circle_filled(led, 1.6, with_a(Color32::from_rgb(255, 200, 120), d));
                 glow(&p, tex, led, 8.0, AMBER, 0.5 * d);
+            }
+        }
+    }
+}
+
+/// The computer keyboard plays notes (a piano row, like in most hosts): A W S E D F T G Y H U J
+/// K O L P ; and Z / X for the octave. Works by key position, whatever the keyboard layout.
+pub fn qwerty(ui: &mut Ui, cx: &Cx, g: &mut Gui) {
+    use egui::Key;
+    const MAP: [(Key, i32); 18] = [
+        (Key::A, 0), (Key::W, 1), (Key::S, 2), (Key::E, 3), (Key::D, 4), (Key::F, 5), (Key::T, 6), (Key::G, 7), (Key::Y, 8),
+        (Key::H, 9), (Key::U, 10), (Key::J, 11), (Key::K, 12), (Key::O, 13), (Key::L, 14), (Key::P, 15), (Key::Semicolon, 16), (Key::Quote, 17),
+    ];
+    // let go of everything when the window loses the keyboard (no hanging notes)
+    let focused = ui.ctx().input(|i| i.focused);
+    if !focused && !g.qwerty_held.is_empty() {
+        let mut q = cx.shared.kb.lock();
+        for (_, n) in g.qwerty_held.drain(..) {
+            q.push((n, false, 0.0));
+        }
+    }
+    // not while typing into a field
+    if ui.ctx().wants_keyboard_input() {
+        return;
+    }
+    let events = ui.ctx().input(|i| i.events.clone());
+    let base = 12 * (g.oct + 2);
+    for ev in events {
+        if let egui::Event::Key { key, physical_key, pressed, repeat, modifiers } = ev {
+            if repeat || modifiers.command || modifiers.alt {
+                continue;
+            }
+            let k = physical_key.unwrap_or(key);
+            if pressed && k == Key::Z {
+                g.oct = (g.oct - 1).max(0);
+                continue;
+            }
+            if pressed && k == Key::X {
+                g.oct = (g.oct + 1).min(6);
+                continue;
+            }
+            if let Some((_, off)) = MAP.iter().find(|(mk, _)| *mk == k) {
+                if pressed {
+                    let n = (base + off).clamp(0, 127) as u8;
+                    if !g.qwerty_held.iter().any(|(kk, _)| *kk == k) {
+                        g.qwerty_held.push((k, n));
+                        cx.shared.kb.lock().push((n, true, 0.8));
+                    }
+                } else if let Some(i) = g.qwerty_held.iter().position(|(kk, _)| *kk == k) {
+                    let (_, n) = g.qwerty_held.remove(i);
+                    cx.shared.kb.lock().push((n, false, 0.0));
+                }
             }
         }
     }

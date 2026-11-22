@@ -20,6 +20,55 @@ pub(super) struct EventLoop {
     event_loop_running: bool,
     /// bit n = X button n+1 is currently held (as far as we saw)
     buttons_down: u8,
+    dnd: Dnd,
+}
+
+/// State of an XDND drag over the window.
+#[derive(Default)]
+struct Dnd {
+    source: u32,
+    active: bool,
+    has_uris: bool,
+    requested: bool,
+    files: Option<Vec<std::path::PathBuf>>,
+    pos: crate::Point,
+    drop_pending: bool,
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `text/uri-list` -> local paths.
+fn parse_uri_list(data: &[u8]) -> Vec<std::path::PathBuf> {
+    let text = String::from_utf8_lossy(data);
+    text.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let rest = l.strip_prefix("file://")?;
+            // file://host/path or file:///path
+            let path = match rest.find('/') {
+                Some(i) => &rest[i..],
+                None => return None,
+            };
+            Some(std::path::PathBuf::from(percent_decode(path)))
+        })
+        .collect()
 }
 
 impl EventLoop {
@@ -35,6 +84,7 @@ impl EventLoop {
             event_loop_running: false,
             new_physical_size: None,
             buttons_down: 0,
+            dnd: Dnd::default(),
         }
     }
 
@@ -188,12 +238,29 @@ impl EventLoop {
             // window
             ////
             XEvent::ClientMessage(event) => {
+                let atoms = &self.window.xcb_connection.atoms;
                 if event.format == 32
                     && event.data.as_data32()[0]
-                        == self.window.xcb_connection.atoms.WM_DELETE_WINDOW
+                        == atoms.WM_DELETE_WINDOW
                 {
                     self.handle_close_requested();
+                } else if event.type_ == atoms.XdndEnter {
+                    self.xdnd_enter(&event);
+                } else if event.type_ == atoms.XdndPosition {
+                    self.xdnd_position(&event);
+                } else if event.type_ == atoms.XdndLeave {
+                    self.dnd = Dnd::default();
+                    self.handler.on_event(
+                        &mut crate::Window::new(Window { inner: &self.window }),
+                        Event::Mouse(MouseEvent::DragLeft),
+                    );
+                } else if event.type_ == atoms.XdndDrop {
+                    self.xdnd_drop(&event);
                 }
+            }
+
+            XEvent::SelectionNotify(event) => {
+                self.xdnd_selection(&event);
             }
 
             XEvent::Expose(_) | XEvent::MapNotify(_) => {
@@ -317,6 +384,128 @@ impl EventLoop {
 
             _ => {}
         }
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // XDND: files dragged in from a file manager
+    // ----------------------------------------------------------------------------------------
+    fn xdnd_send(&self, target: u32, type_: u32, data: [u32; 5]) {
+        use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
+        let conn = &self.window.xcb_connection.conn;
+        let ev = ClientMessageEvent::new(32, target, type_, data);
+        let _ = conn.send_event(false, target, EventMask::NO_EVENT, ev);
+        let _ = conn.flush();
+    }
+
+    fn xdnd_enter(&mut self, event: &x11rb::protocol::xproto::ClientMessageEvent) {
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+        let d = event.data.as_data32();
+        let atoms = self.window.xcb_connection.atoms;
+        self.dnd = Dnd { source: d[0], active: true, ..Dnd::default() };
+        let mut types: Vec<u32> = d[2..5].to_vec();
+        if d[1] & 1 != 0 {
+            // more than three types: read XdndTypeList from the source
+            let conn = &self.window.xcb_connection.conn;
+            if let Ok(c) = conn.get_property(false, d[0], atoms.XdndTypeList, AtomEnum::ATOM, 0, 64) {
+                if let Ok(r) = c.reply() {
+                    if let Some(v) = r.value32() {
+                        types.extend(v);
+                    }
+                }
+            }
+        }
+        self.dnd.has_uris = types.contains(&atoms.TEXT_URI_LIST);
+    }
+
+    fn xdnd_position(&mut self, event: &x11rb::protocol::xproto::ClientMessageEvent) {
+        use x11rb::protocol::xproto::ConnectionExt;
+        let d = event.data.as_data32();
+        let atoms = self.window.xcb_connection.atoms;
+        if !self.dnd.active {
+            self.dnd = Dnd { source: d[0], active: true, has_uris: true, ..Dnd::default() };
+        }
+        let (rx, ry) = ((d[2] >> 16) as i16, (d[2] & 0xffff) as i16);
+        let conn = &self.window.xcb_connection.conn;
+        let root = conn.setup().roots[self.window.xcb_connection.screen].root;
+        let (x, y) = match conn.translate_coordinates(root, self.window.window_id, rx, ry).ok().and_then(|c| c.reply().ok()) {
+            Some(r) => (r.dst_x as i32, r.dst_y as i32),
+            None => (0, 0),
+        };
+        self.dnd.pos = PhyPoint::new(x, y).to_logical(&self.window.window_info);
+        if self.dnd.has_uris && !self.dnd.requested {
+            // fetch the file list now (it arrives as SelectionNotify)
+            self.dnd.requested = true;
+            let _ = conn.convert_selection(self.window.window_id, atoms.XdndSelection, atoms.TEXT_URI_LIST, atoms.BASEVIEW_XDND, d[3]);
+            let _ = conn.flush();
+        }
+        let accept = self.dnd.has_uris;
+        self.xdnd_send(self.dnd.source, atoms.XdndStatus, [self.window.window_id, if accept { 1 | 2 } else { 2 }, 0, 0, if accept { atoms.XdndActionCopy } else { 0 }]);
+        let data = match &self.dnd.files {
+            Some(f) => crate::DropData::Files(f.clone()),
+            None => crate::DropData::None,
+        };
+        self.handler.on_event(
+            &mut crate::Window::new(Window { inner: &self.window }),
+            Event::Mouse(MouseEvent::DragMoved { position: self.dnd.pos, modifiers: keyboard_types::Modifiers::empty(), data }),
+        );
+    }
+
+    fn xdnd_selection(&mut self, event: &x11rb::protocol::xproto::SelectionNotifyEvent) {
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt};
+        let atoms = self.window.xcb_connection.atoms;
+        if event.property != atoms.BASEVIEW_XDND || !self.dnd.active {
+            return;
+        }
+        let conn = &self.window.xcb_connection.conn;
+        let files = conn
+            .get_property(true, self.window.window_id, atoms.BASEVIEW_XDND, AtomEnum::ANY, 0, 1 << 20)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|r| parse_uri_list(&r.value))
+            .unwrap_or_default();
+        self.dnd.files = Some(files.clone());
+        if self.dnd.drop_pending {
+            self.finish_drop();
+        } else {
+            self.handler.on_event(
+                &mut crate::Window::new(Window { inner: &self.window }),
+                Event::Mouse(MouseEvent::DragMoved { position: self.dnd.pos, modifiers: keyboard_types::Modifiers::empty(), data: crate::DropData::Files(files) }),
+            );
+        }
+    }
+
+    fn xdnd_drop(&mut self, event: &x11rb::protocol::xproto::ClientMessageEvent) {
+        use x11rb::protocol::xproto::ConnectionExt;
+        let d = event.data.as_data32();
+        let atoms = self.window.xcb_connection.atoms;
+        if !self.dnd.active {
+            self.dnd = Dnd { source: d[0], active: true, has_uris: true, ..Dnd::default() };
+        }
+        if self.dnd.files.is_some() {
+            self.finish_drop();
+        } else {
+            self.dnd.drop_pending = true;
+            if !self.dnd.requested {
+                self.dnd.requested = true;
+                let conn = &self.window.xcb_connection.conn;
+                let _ = conn.convert_selection(self.window.window_id, atoms.XdndSelection, atoms.TEXT_URI_LIST, atoms.BASEVIEW_XDND, d[2]);
+                let _ = conn.flush();
+            }
+        }
+    }
+
+    fn finish_drop(&mut self) {
+        let atoms = self.window.xcb_connection.atoms;
+        let files = self.dnd.files.clone().unwrap_or_default();
+        let ok = !files.is_empty();
+        if ok {
+            self.handler.on_event(
+                &mut crate::Window::new(Window { inner: &self.window }),
+                Event::Mouse(MouseEvent::DragDropped { position: self.dnd.pos, modifiers: keyboard_types::Modifiers::empty(), data: crate::DropData::Files(files) }),
+            );
+        }
+        self.xdnd_send(self.dnd.source, atoms.XdndFinished, [self.window.window_id, ok as u32, if ok { atoms.XdndActionCopy } else { 0 }, 0, 0]);
+        self.dnd = Dnd::default();
     }
 
     fn handle_close_requested(&mut self) {

@@ -109,6 +109,8 @@ where
     start_time: Instant,
     egui_input: egui::RawInput,
     pointer_pos_in_points: Option<egui::Pos2>,
+    /// files dragged over the window from the desktop (Windows / macOS)
+    drag_files: Vec<std::path::PathBuf>,
     current_cursor_icon: baseview::MouseCursor,
     kb_events: bool,
 
@@ -216,6 +218,7 @@ where
             start_time,
             egui_input,
             pointer_pos_in_points: None,
+            drag_files: Vec::new(),
             kb_events: true,
             current_cursor_icon: baseview::MouseCursor::Default,
 
@@ -342,6 +345,11 @@ where
             self.points_per_pixel,
         ));
 
+        self.egui_input.hovered_files = self
+            .drag_files
+            .iter()
+            .map(|p| egui::HoveredFile { path: Some(p.clone()), mime: String::new() })
+            .collect();
         self.egui_ctx.begin_pass(self.egui_input.take());
 
         //let mut repaint_requested = false;
@@ -570,6 +578,39 @@ where
                     self.pointer_pos_in_points = None;
                     self.egui_input.events.push(egui::Event::PointerGone);
                 }
+                // files dragged in from the desktop: shown to egui as hovered / dropped files
+                baseview::MouseEvent::DragEntered { position, data, .. } | baseview::MouseEvent::DragMoved { position, data, .. } => {
+                    let sc = self.ui_scale;
+                    let pos = pos2(position.x as f32 / sc, position.y as f32 / sc);
+                    self.pointer_pos_in_points = Some(pos);
+                    self.egui_input.events.push(egui::Event::PointerMoved(pos));
+                    return match data {
+                        baseview::DropData::Files(f) if !f.is_empty() => {
+                            self.drag_files = f.clone();
+                            EventStatus::AcceptDrop(baseview::DropEffect::Copy)
+                        }
+                        _ => {
+                            self.drag_files.clear();
+                            EventStatus::Ignored
+                        }
+                    };
+                }
+                baseview::MouseEvent::DragLeft => {
+                    self.drag_files.clear();
+                }
+                baseview::MouseEvent::DragDropped { position, data, .. } => {
+                    self.drag_files.clear();
+                    let sc = self.ui_scale;
+                    let pos = pos2(position.x as f32 / sc, position.y as f32 / sc);
+                    self.pointer_pos_in_points = Some(pos);
+                    self.egui_input.events.push(egui::Event::PointerMoved(pos));
+                    if let baseview::DropData::Files(f) = data {
+                        for p in f {
+                            self.egui_input.dropped_files.push(egui::DroppedFile { path: Some(p.clone()), ..Default::default() });
+                        }
+                        return EventStatus::AcceptDrop(baseview::DropEffect::Copy);
+                    }
+                }
                 _ => {}
             },
             baseview::Event::Keyboard(event) => {
@@ -599,10 +640,12 @@ where
                     _ => (),
                 }
 
-                if let Some(key) = crate::translate::translate_virtual_key(&event.key) {
+                // the physical key too (a key's place on the keyboard, whatever the layout)
+                let physical = crate::translate::translate_code(event.code);
+                if let Some(key) = crate::translate::translate_virtual_key(&event.key).or(physical) {
                     self.egui_input.events.push(egui::Event::Key {
                         key,
-                        physical_key: None,
+                        physical_key: physical,
                         pressed,
                         repeat: event.repeat,
                         modifiers: self.egui_input.modifiers,

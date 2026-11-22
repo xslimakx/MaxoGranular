@@ -75,6 +75,8 @@ pub struct Gui {
     pub reel_pos: [f32; 2],
     pub vu: [(f32, f32); 2],
     pub kb_note: Option<u8>,
+    /// computer-keyboard notes being held: (key, note)
+    pub qwerty_held: Vec<(egui::Key, u8)>,
     pub oct: i32,
     pub key_anim: Vec<f32>,
     pub wheel: [f32; 2],
@@ -93,6 +95,9 @@ pub struct Gui {
     pub lfo_drag: Option<usize>,
     pub env_drag: Option<usize>,
     pub demo_done: bool,
+    /// a file dialog is open for layer n; its answer lands here
+    pub dialog: Option<(usize, Arc<parking_lot::Mutex<Option<Result<Option<std::path::PathBuf>, ()>>>>)>,
+    pub last_dir: Option<std::path::PathBuf>,
 }
 
 impl Gui {
@@ -114,6 +119,7 @@ impl Gui {
             reel_pos: [0.3; 2],
             vu: [(0.0, 0.0); 2],
             kb_note: None,
+            qwerty_held: Vec::new(),
             oct: 3,
             key_anim: vec![0.0; 128],
             wheel: [0.0; 2],
@@ -132,6 +138,8 @@ impl Gui {
             lfo_drag: None,
             env_drag: None,
             demo_done: false,
+            dialog: None,
+            last_dir: None,
         }
     }
 
@@ -303,6 +311,7 @@ pub fn create(params: Arc<GrainParams>, shared: Arc<Shared>) -> Option<Box<dyn E
                 sections::fx(ui, &cx, g, &tex);
                 perf::draw(ui, &cx, g, &tex);
                 perf::keyboard(ui, &cx, g, &tex);
+                perf::qwerty(ui, &cx, g);
 
                 match g.overlay {
                     Overlay::Presets => header::browser(ui, &cx, g, &tex),
@@ -310,6 +319,8 @@ pub fn create(params: Arc<GrainParams>, shared: Arc<Shared>) -> Option<Box<dyn E
                     Overlay::None => {}
                 }
                 knobs::cables(ui, &cx, g, &tex);
+                file_drop(ui, &cx, g, &tex);
+                poll_dialog(&cx, g);
 
                 if let Some((_, t)) = g.status {
                     if now - t > 3.0 {
@@ -363,4 +374,117 @@ fn demo_setup(p: &GrainParams, shared: &Shared, setter: &ParamSetter, g: &mut Gu
         "matrix" => g.overlay = Overlay::Matrix,
         _ => {}
     }
+}
+
+/// Audio files dragged from the desktop onto the window: the half under the pointer (A left,
+/// B right) gets the sound.
+fn file_drop(ui: &mut egui::Ui, cx: &Cx, g: &mut Gui, tex: &Tex) {
+    let (hovered, dropped, ptr) = ui.ctx().input(|i| (i.raw.hovered_files.clone(), i.raw.dropped_files.clone(), i.pointer.hover_pos()));
+    let layer = |q: Option<Pos2>| if q.map(|q| q.x - cx.o.x < BASE_W * 0.5).unwrap_or(true) { 0 } else { 1 };
+    if !hovered.is_empty() {
+        let l = layer(ptr);
+        let pl = if l == 0 { P_A } else { P_B };
+        let r = cx.r(pl[0] + 24.0, pl[1] + 44.0, 352.0, 150.0);
+        let ok = hovered.iter().any(|h| h.path.as_ref().map(|p| sources::is_audio(p)).unwrap_or(true));
+        let col = if l == 0 { PHOS_A } else { PHOS_B };
+        let p = ui.painter();
+        let pulse = 0.6 + 0.4 * ((cx.now * 5.0) as f32).sin();
+        p.rect_filled(r, 8.0, Color32::from_black_alpha(215));
+        glow(p, tex, r.center(), r.width() * 0.6, col, 0.25 * pulse);
+        p.rect_stroke(r.shrink(3.0), 6.0, Stroke::new(2.0f32, with_a(col, 0.8 * pulse)), egui::StrokeKind::Inside);
+        let txt = if ok { format!("DROP TO LOAD INTO GRAIN {}", if l == 0 { "A" } else { "B" }) } else { "WAV · AIFF · FLAC · MP3 · OGG · M4A".to_string() };
+        lcd_text(p, r.center(), &txt, 13.0, col, egui::Align2::CENTER_CENTER);
+    }
+    if !dropped.is_empty() {
+        let l = layer(ptr);
+        let file = dropped.iter().filter_map(|d| d.path.clone()).find(|p| sources::is_audio(p));
+        match file {
+            Some(path) => {
+                if sources::load_audio(&path).is_some() {
+                    set_source(cx, l, SourceRef::File(path.to_string_lossy().to_string()));
+                    edit(cx, |st| st.layers[l].on = true);
+                    g.say(format!("{} → GRAIN {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), if l == 0 { "A" } else { "B" }), cx.now);
+                } else {
+                    g.say("Could not read that file", cx.now);
+                }
+            }
+            None => g.say("Drop an audio file: WAV, AIFF, FLAC, MP3, OGG, M4A", cx.now),
+        }
+    }
+}
+
+/// Opens the system's file dialog for a layer (on its own thread; macOS wants it on this one).
+pub fn open_dialog(g: &mut Gui, l: usize) {
+    if g.dialog.is_some() {
+        return;
+    }
+    let slot = Arc::new(parking_lot::Mutex::new(None));
+    let dir = g.last_dir.clone().or_else(sources::samples_dir).or_else(dirs::home_dir);
+    let run = {
+        let slot = slot.clone();
+        move || {
+            *slot.lock() = Some(pick_file(dir));
+        }
+    };
+    if cfg!(target_os = "macos") {
+        run();
+    } else {
+        std::thread::spawn(run);
+    }
+    g.dialog = Some((l, slot));
+}
+
+fn poll_dialog(cx: &Cx, g: &mut Gui) {
+    let Some((l, slot)) = g.dialog.clone() else { return };
+    let ans = slot.lock().take();
+    if let Some(ans) = ans {
+        g.dialog = None;
+        let Ok(ans) = ans else {
+            // no file dialog on this system: type the path instead
+            g.path_entry = Some((l, String::new()));
+            return;
+        };
+        if let Some(path) = ans {
+            g.last_dir = path.parent().map(|p| p.to_path_buf());
+            if sources::load_audio(&path).is_some() {
+                set_source(cx, l, SourceRef::File(path.to_string_lossy().to_string()));
+                edit(cx, |st| st.layers[l].on = true);
+                g.say(format!("{} → GRAIN {}", path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(), if l == 0 { "A" } else { "B" }), cx.now);
+            } else {
+                g.say("Could not read that file", cx.now);
+            }
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn pick_file(dir: Option<std::path::PathBuf>) -> Result<Option<std::path::PathBuf>, ()> {
+    let mut d = rfd::FileDialog::new().set_title("Load a sound").add_filter("Audio", &sources::AUDIO_EXT);
+    if let Some(dir) = dir {
+        d = d.set_directory(dir);
+    }
+    Ok(d.pick_file())
+}
+
+/// Linux: the desktop's own dialog through zenity (GNOME / most desktops) or kdialog (KDE).
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn pick_file(dir: Option<std::path::PathBuf>) -> Result<Option<std::path::PathBuf>, ()> {
+    use std::process::Command;
+    let start = dir.map(|d| format!("{}/", d.to_string_lossy())).unwrap_or_default();
+    let pattern: Vec<String> = sources::AUDIO_EXT.iter().flat_map(|e| [format!("*.{e}"), format!("*.{}", e.to_uppercase())]).collect();
+    let tries: Vec<Vec<String>> = vec![
+        vec!["zenity".into(), "--file-selection".into(), "--title=Load a sound".into(), format!("--filename={start}"), format!("--file-filter=Audio | {}", pattern.join(" "))],
+        vec!["kdialog".into(), "--getopenfilename".into(), if start.is_empty() { ".".into() } else { start.clone() }, format!("Audio ({})", pattern.join(" "))],
+        vec!["qarma".into(), "--file-selection".into(), "--title=Load a sound".into()],
+    ];
+    for t in tries {
+        match Command::new(&t[0]).args(&t[1..]).output() {
+            Ok(o) => {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                return Ok(if o.status.success() && !s.is_empty() { Some(std::path::PathBuf::from(s)) } else { None });
+            }
+            Err(_) => continue, // not installed: try the next one
+        }
+    }
+    Err(())
 }

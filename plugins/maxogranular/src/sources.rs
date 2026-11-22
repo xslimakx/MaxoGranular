@@ -582,7 +582,7 @@ pub fn list_files() -> Vec<String> {
             let p = e.path();
             if p.is_dir() && depth < 2 {
                 walk(&p, root, depth + 1, out);
-            } else if p.extension().map(|x| x.eq_ignore_ascii_case("wav")).unwrap_or(false) {
+            } else if is_audio(&p) {
                 if let Ok(rel) = p.strip_prefix(root) {
                     out.push(rel.to_string_lossy().replace('\\', "/"));
                 }
@@ -595,6 +595,81 @@ pub fn list_files() -> Vec<String> {
     walk(&root, &root, 0, &mut out);
     out.sort_by_key(|s| s.to_lowercase());
     out
+}
+
+/// File types the sources can be loaded from.
+pub const AUDIO_EXT: [&str; 9] = ["wav", "wave", "aif", "aiff", "flac", "mp3", "ogg", "m4a", "mp4"];
+
+pub fn is_audio(p: &Path) -> bool {
+    p.extension().map(|x| AUDIO_EXT.iter().any(|e| x.eq_ignore_ascii_case(e))).unwrap_or(false)
+}
+
+/// Loads any supported audio file: WAV directly, the rest (MP3, FLAC, AIFF, OGG, M4A) through
+/// symphonia. At most 60 s, mono or the first two channels.
+pub fn load_audio(path: &Path) -> Option<Source> {
+    let wav = path.extension().map(|x| x.eq_ignore_ascii_case("wav") || x.eq_ignore_ascii_case("wave")).unwrap_or(false);
+    if wav {
+        if let Some(s) = load_wav(path) {
+            return Some(s);
+        }
+    }
+    load_other(path)
+}
+
+fn load_other(path: &Path) -> Option<Source> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+    if std::fs::metadata(path).ok()?.len() > 400 << 20 {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mut hint = Hint::new();
+    if let Some(e) = path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(e);
+    }
+    let probed = symphonia::default::get_probe().format(&hint, mss, &FormatOptions::default(), &MetadataOptions::default()).ok()?;
+    let mut format = probed.format;
+    let track = format.tracks().iter().find(|t| t.codec_params.codec != CODEC_TYPE_NULL)?.clone();
+    let sr = track.codec_params.sample_rate? as f32;
+    let mut dec = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).ok()?;
+    let max = (sr * 60.0) as usize;
+    let mut data: Vec<[f32; 2]> = Vec::new();
+    let mut buf: Option<SampleBuffer<f32>> = None;
+    while data.len() < max {
+        let packet = match format.next_packet() {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        if packet.track_id() != track.id {
+            continue;
+        }
+        let decoded = match dec.decode(&packet) {
+            Ok(d) => d,
+            Err(symphonia::core::errors::Error::DecodeError(_)) => continue,
+            Err(_) => break,
+        };
+        let spec = *decoded.spec();
+        let ch = spec.channels.count().max(1);
+        if buf.as_ref().map(|b| b.capacity() < decoded.capacity() * ch).unwrap_or(true) {
+            buf = Some(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec));
+        }
+        let b = buf.as_mut().unwrap();
+        b.copy_interleaved_ref(decoded);
+        for f in b.samples().chunks(ch) {
+            data.push([f[0], if ch > 1 { f[1] } else { f[0] }]);
+        }
+    }
+    data.truncate(max);
+    if data.is_empty() {
+        return None;
+    }
+    let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    Some(Source::new(name, data, sr))
 }
 
 /// Loads a WAV (any bit depth, mono or stereo; at most 60 s).
@@ -628,7 +703,7 @@ pub fn load(r: &SourceRef) -> Arc<Source> {
         SourceRef::File(p) => {
             let path = Path::new(p);
             let full = if path.is_absolute() { path.to_path_buf() } else { samples_dir().map(|d| d.join(path)).unwrap_or_else(|| path.to_path_buf()) };
-            match load_wav(&full) {
+            match load_audio(&full) {
                 Some(s) => Arc::new(s),
                 None => {
                     let mut s = builtin(0);

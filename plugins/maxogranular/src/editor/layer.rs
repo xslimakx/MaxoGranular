@@ -56,8 +56,15 @@ pub fn draw(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, l: usize) {
     let p = ui.painter().clone();
 
     // ---- top row: title, source, mode, lamp, power
-    title(&p, at(22.0, 22.0), if l == 0 { "GRAIN  A" } else { "GRAIN  B" }, x0 + 0.0);
-    source_selector(ui, cx, g, l, rr(92.0, 11.0, 268.0, 22.0));
+    title(&p, at(22.0, 22.0), if l == 0 { "GRAIN A" } else { "GRAIN B" }, x0 + 0.0);
+    let on = g.ease(egui::Id::new(("onlit", l)), if set.on { 1.0 } else { 0.0 }, 14.0, cx.dt);
+    if lit_button(ui, tex, rr(84.0, 11.0, 40.0, 22.0), egui::Id::new(("onb", l)), if set.on { "ON" } else { "OFF" }, on, Color32::from_rgb(120, 255, 140), "Layer on / off").clicked() {
+        edit(cx, |st| st.layers[l].on = !st.layers[l].on);
+    }
+    if lit_button(ui, tex, rr(130.0, 11.0, 58.0, 22.0), egui::Id::new(("loadb", l)), "LOAD", 0.0, col, "Load your own sound: WAV, AIFF, FLAC, MP3, OGG, M4A\n(or drag a file onto the screen)").clicked() {
+        super::open_dialog(g, l);
+    }
+    source_selector(ui, cx, g, l, rr(194.0, 11.0, 172.0, 22.0));
     let lit_c = g.ease(egui::Id::new(("modelit", l, 0)), if set.mode == 0 { 1.0 } else { 0.0 }, 12.0, cx.dt);
     let lit_s = g.ease(egui::Id::new(("modelit", l, 1)), if set.mode == 1 { 1.0 } else { 0.0 }, 12.0, cx.dt);
     if lit_button(ui, tex, rr(372.0, 11.0, 58.0, 22.0), egui::Id::new(("cloud", l)), "CLOUD", lit_c, col, "Cloud: grains at random times (Density per second) - textures, pads, clouds.").clicked() {
@@ -78,10 +85,7 @@ pub fn draw(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, l: usize) {
         }
     }
     let lamp = g.ease(egui::Id::new(("lamp", l)), if set.on { (active as f32 / 12.0).min(1.0) } else { 0.0 }, 20.0, cx.dt);
-    jewel(&p, tex, at(520.0, 22.0), 18.0, if l == 0 { 0 } else { 1 }, lamp);
-    if toggle(ui, tex, at(556.0, 22.0), egui::Id::new(("power", l)), set.on, "Layer on / off").clicked() {
-        edit(cx, |st| st.layers[l].on = !st.layers[l].on);
-    }
+    jewel(&p, tex, at(548.0, 22.0), 18.0, if l == 0 { 0 } else { 1 }, lamp);
 
     // ---- the screen
     screen(ui, cx, g, tex, l, rr(CRT_X, CRT_Y, CRT_W, CRT_H), active);
@@ -148,59 +152,75 @@ pub fn draw(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, l: usize) {
     }
 }
 
+#[derive(Clone, PartialEq)]
+enum Act {
+    Head,
+    Load,
+    Path,
+    Folder,
+    Rescan,
+    Src(SourceRef),
+}
+
 fn source_selector(ui: &mut Ui, cx: &Cx, g: &mut Gui, l: usize, r: Rect) {
-    // list: built-ins by category, then the user's files, then actions
+    // list: loading your own sound first, then your samples folder, then the built-in sounds
     let mut names: Vec<String> = Vec::new();
-    let mut acts: Vec<Option<SourceRef>> = Vec::new();
+    let mut acts: Vec<Act> = Vec::new();
+    let mut add = |n: String, a: Act| {
+        names.push(n);
+        acts.push(a);
+    };
+    add("──Your sound".into(), Act::Head);
+    add("📂  Load a sound file…".into(), Act::Load);
+    add("✎  Load by path…".into(), Act::Path);
+    add("📁  Open the samples folder".into(), Act::Folder);
+    add("⟳  Rescan the samples folder".into(), Act::Rescan);
+    add(format!("──Samples folder ({})", g.files.len()), Act::Head);
+    for f in &g.files {
+        add(f.clone(), Act::Src(SourceRef::File(f.clone())));
+    }
     let mut last = "";
     for (i, (cat, name)) in BUILTIN.iter().enumerate() {
         if *cat != last {
-            names.push(format!("──{cat}"));
-            acts.push(None);
+            add(format!("──Built-in: {cat}"), Act::Head);
             last = cat;
         }
-        names.push(name.to_string());
-        acts.push(Some(SourceRef::Builtin(i as u16)));
+        add(name.to_string(), Act::Src(SourceRef::Builtin(i as u16)));
     }
-    names.push("──Your samples".into());
-    acts.push(None);
-    for f in &g.files {
-        names.push(f.clone());
-        acts.push(Some(SourceRef::File(f.clone())));
-    }
-    let n_src = names.len();
-    names.push("──".into());
-    acts.push(None);
-    names.push("📂  Open the samples folder".into());
-    acts.push(None);
-    names.push("⟳  Rescan the folder".into());
-    acts.push(None);
-    names.push("✎  Load a WAV by path…".into());
-    acts.push(None);
     let cur_ref = cx.st.layers[l].source.clone();
-    let cur = acts.iter().position(|a| a.as_ref() == Some(&cur_ref)).unwrap_or(1);
+    // a file loaded from elsewhere is not in the list: show its name anyway
+    let cur = acts.iter().position(|a| *a == Act::Src(cur_ref.clone()));
     let shown = sources::display_name(&cur_ref).to_uppercase();
     let col = layer_col(l);
-    // ◀ ▶ step through the sounds only (not the actions)
-    if let Some(i) = stepper(ui, r, &format!("src{l}"), &names, cur, &shown, col, "The sound the grains are cut from.\nPut your own WAV files in the samples folder (or load one by path).") {
-        if i < n_src {
-            if let Some(Some(s)) = acts.get(i).cloned() {
-                set_source(cx, l, s);
-            }
-        } else {
-            match i - n_src {
-                1 => {
-                    if let Some(d) = sources::samples_dir() {
-                        open_folder(&d);
-                    }
+    let cur_i = cur.unwrap_or(1);
+    if let Some(mut i) = stepper(ui, r, &format!("src{l}"), &names, cur_i, &shown, col, "The sound the grains are cut from.\nLOAD (or drag a WAV / AIFF / FLAC / MP3 / OGG file onto the screen) for your own sound.") {
+        // the arrows step through the sounds only
+        let n = acts.len();
+        let step = if i == (cur_i + 1) % n { Some(1) } else if i == (cur_i + n - 1) % n { Some(n - 1) } else { None };
+        if let Some(st) = step {
+            let mut k = i;
+            for _ in 0..n {
+                if matches!(acts[k], Act::Src(_)) {
+                    break;
                 }
-                2 => {
-                    g.files = sources::list_files();
-                    g.say(format!("{} samples found", g.files.len()), cx.now);
-                }
-                3 => g.path_entry = Some((l, String::new())),
-                _ => {}
+                k = (k + st) % n;
             }
+            i = k;
+        }
+        match acts[i].clone() {
+            Act::Src(s) => set_source(cx, l, s),
+            Act::Load => super::open_dialog(g, l),
+            Act::Path => g.path_entry = Some((l, String::new())),
+            Act::Folder => {
+                if let Some(d) = sources::samples_dir() {
+                    open_folder(&d);
+                }
+            }
+            Act::Rescan => {
+                g.files = sources::list_files();
+                g.say(format!("{} samples found", g.files.len()), cx.now);
+            }
+            Act::Head => {}
         }
     }
     if let Some((pl, buf)) = g.path_entry.clone() {
@@ -210,17 +230,18 @@ fn source_selector(ui: &mut Ui, cx: &Cx, g: &mut Gui, l: usize, r: Rect) {
             egui::Area::new(egui::Id::new(("patharea", l))).fixed_pos(er.min).order(egui::Order::Foreground).show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let te = ui.add(egui::TextEdit::singleline(&mut b).desired_width(er.width() - 90.0).hint_text("/path/to/sound.wav"));
+                        let te = ui.add(egui::TextEdit::singleline(&mut b).desired_width(er.width() - 90.0).hint_text("/path/to/sound.wav (.aif .flac .mp3 .ogg)"));
                         te.request_focus();
                         let go = ui.button("Load").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
                         let esc = ui.button("✕").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
                         if go {
                             let path = b.trim().trim_matches('"').to_string();
-                            if sources::load_wav(std::path::Path::new(&path)).is_some() {
+                            if sources::load_audio(std::path::Path::new(&path)).is_some() {
                                 set_source(cx, l, SourceRef::File(path));
+                                edit(cx, |st| st.layers[l].on = true);
                                 g.path_entry = None;
                             } else {
-                                g.say("Could not read that WAV file", cx.now);
+                                g.say("Could not read that file", cx.now);
                                 g.path_entry = Some((l, b.clone()));
                             }
                         } else if esc {
@@ -376,7 +397,8 @@ fn screen(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, l: usize, r: Rect, activ
             }
         }
     } else {
-        lcd_text(&p, r.center(), "STANDBY", 13.0, with_a(col, 0.4 * on_k), Align2::CENTER_CENTER);
+        lcd_text(&p, r.center() - Vec2::new(0.0, 8.0), "LAYER OFF", 14.0, with_a(col, 0.55 * on_k), Align2::CENTER_CENTER);
+        lcd_text(&p, r.center() + Vec2::new(0.0, 12.0), "PRESS  ON  TO HEAR IT", 9.0, with_a(col, 0.4 * on_k), Align2::CENTER_CENTER);
     }
     // mode / window print in the corner
     let info = format!("{} · {}{}", MODES[set.mode as usize].to_uppercase(), WINDOWS[set.window as usize].to_uppercase(), if set.streams > 1 { format!(" · ×{}", set.streams) } else { String::new() });

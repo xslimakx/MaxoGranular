@@ -313,6 +313,8 @@ pub struct Shared {
     /// on-screen keyboard: (note, on)
     pub kb: Mutex<Vec<(u8, bool, f32)>>,
     pub wheel: AtomicF32,
+    /// pitch bend as the engine plays it, -1..1 (MIDI or the on-screen wheel)
+    pub bend: AtomicF32,
     /// the on-screen pitch / mod wheels: -1..1, 0..1, changed when `ui_ctl` moves
     pub ui_bend: AtomicF32,
     pub ui_wheel: AtomicF32,
@@ -357,6 +359,7 @@ impl Default for Shared {
             notes_on: (0..128).map(|_| AtomicBool::new(false)).collect(),
             kb: Mutex::new(Vec::with_capacity(64)),
             wheel: AtomicF32::new(0.0),
+            bend: AtomicF32::new(0.0),
             ui_bend: AtomicF32::new(0.0),
             ui_wheel: AtomicF32::new(0.0),
             ui_ctl: AtomicU32::new(0),

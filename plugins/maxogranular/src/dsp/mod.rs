@@ -600,6 +600,7 @@ impl Engine {
         self.playing = t.playing;
         shared.tempo.store(self.tempo as f32, Ordering::Relaxed);
         shared.wheel.store(self.wheel, Ordering::Relaxed);
+        shared.bend.store(self.bend, Ordering::Relaxed);
     }
 
     fn rnd(&mut self) -> f32 {
