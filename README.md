@@ -20,7 +20,7 @@ MaxoGranular cuts sounds into tiny grains and plays them back as clouds, pads, t
 | Grain controls | Position (also drag on the screen), Scan (forwards / backwards / frozen), Spray, Size 1 ms - 2 s, Density, Jitter, Pitch, Fine, Pitch random, Skew, Reverse, Stereo, Detune, Pan, Level; window shape (Hann, Gauss, Triangle, Tukey, Decay, Swell), up to 8 streams, key tracking, root note. |
 | **Filter** | 7 types (LP 12 / 24, HP 12 / 24, band, notch, peak), cutoff, resonance, drive, key tracking, mix; drag the response curve. |
 | **Modulation** | 3 envelopes (attack, hold, decay, sustain, release, curves; drag the handles on the screen), 4 drawn LFOs (free / retrig / 1-shot, synced to the tempo, 23 shapes to start from), velocity, note, mod wheel, aftertouch, random, 4 macros. |
-| Patching | **Drag a cable from any jack onto any knob.** A coloured ring shows the amount; Alt+drag on the knob changes it; right-click a knob or open the MATRIX for every route (up to 32). |
+| Patching | **Drag a cable from any jack onto any knob.** A coloured ring shows the amount; drag the coloured pill under the knob to change it (or Alt+drag the knob); right-click a knob or open the MATRIX for every route (up to 32). |
 | **Effects** | Tape delay (synced, ping-pong) and reverb (14 types). |
 | Voices | Poly / Mono / Legato, up to 16 voices, glide, pitch bend range, velocity amount. |
 | Presets | 57 factory presets in 9 categories, favourites, your own presets. |

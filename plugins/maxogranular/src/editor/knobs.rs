@@ -204,6 +204,63 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
         p.circle_filled(q, 1.5, Color32::from_rgb(255, 250, 235));
     }
 
+    // modulation pills under the knob, one per source (up to 3): drag one up / down for its
+    // amount, click to pick it, double-click resets it to zero, right-click removes it
+    let mut pill_text: Option<String> = None;
+    if !mods.is_empty() {
+        let shown: Vec<(usize, ModSlot)> = mods.iter().take(3).cloned().collect();
+        let pw = 12.0;
+        let gap = 3.0;
+        let total = shown.len() as f32 * pw + (shown.len() as f32 - 1.0) * gap;
+        for (k, (mi, m)) in shown.iter().enumerate() {
+            let pr = Rect::from_min_size(Pos2::new(c.x - total * 0.5 + k as f32 * (pw + gap), c.y + r + 1.0), Vec2::new(pw, 5.0));
+            let pid = id.with(("pill", m.src));
+            let presp = ui.interact(pr.expand2(Vec2::new(1.5, 3.0)), pid, Sense::click_and_drag());
+            let col = SRC_COL[m.src as usize];
+            let foc = focus == Some((m.src, m.dst));
+            if presp.drag_started() || presp.clicked() {
+                g.focus_mod = Some((m.src, m.dst));
+            }
+            if presp.dragged() {
+                let fine = ui.input(|i| i.modifiers.shift);
+                let dv = -presp.drag_delta().y / if fine { 700.0 } else { 140.0 };
+                let mi = *mi;
+                edit(cx, |st| {
+                    if let Some(x) = st.mods.get_mut(mi) {
+                        x.amount = (x.amount + dv).clamp(-1.0, 1.0);
+                    }
+                });
+            }
+            if presp.double_clicked() {
+                let mi = *mi;
+                edit(cx, |st| {
+                    if let Some(x) = st.mods.get_mut(mi) {
+                        x.amount = 0.0;
+                    }
+                });
+            }
+            if presp.secondary_clicked() {
+                let (sv, dv) = (m.src, m.dst);
+                edit(cx, |st| st.mods.retain(|x| !(x.src == sv && x.dst == dv)));
+            }
+            let hot = presp.hovered() || presp.dragged();
+            let p = ui.painter();
+            p.rect_filled(pr.translate(Vec2::new(0.0, 1.0)), 2.5, Color32::from_black_alpha(140));
+            p.rect_filled(pr, 2.5, with_a(col, if hot || foc { 1.0 } else { 0.75 }));
+            p.rect_filled(Rect::from_min_size(pr.min + Vec2::new(1.5, 0.8), Vec2::new(pw - 3.0, 1.2)), 1.0, Color32::from_white_alpha(70));
+            if hot || foc {
+                glow(p, tex, pr.center(), 9.0, col, if hot { 0.45 } else { 0.2 });
+            }
+            if hot || presp.dragged() {
+                let a = cx.st.mods.get(*mi).map(|x| x.amount).unwrap_or(m.amount);
+                pill_text = Some(format!("{} {:+.0}%", SRC_NAMES[m.src as usize], a * 100.0));
+                if !presp.dragged() {
+                    presp.on_hover_text(format!("{} → {}\nDrag up / down: amount (Shift: fine)\nDouble-click: zero · Right-click: remove", SRC_NAMES[m.src as usize], dest_name(d)));
+                }
+            }
+        }
+    }
+
     // label, or the value while touching it
     let vr = Rect::from_center_size(Pos2::new(c.x, c.y + r + 12.0), Vec2::new((2.0 * r + 30.0).max(62.0), 14.0));
     let typing = g.typing.as_ref().filter(|(td, _)| *td == d).map(|(_, s)| s.clone());
@@ -225,6 +282,8 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
         } else {
             g.typing = Some((d, buf));
         }
+    } else if let Some(t) = pill_text {
+        lcd(ui.painter(), vr, &t, 9.5, AMBER, Align2::CENTER_CENTER);
     } else if resp.hovered() || resp.dragged() || adjusting_mod {
         let txt = if adjusting_mod || (alt && focus.is_some() && resp.hovered()) {
             let (s, dst) = focus.unwrap();
@@ -238,7 +297,7 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
         ink_fit(ui.painter(), vr.center(), label, 9.5, vr.width() - 4.0, Align2::CENTER_CENTER);
     }
     if resp.hovered() && !resp.dragged() {
-        let tip = if can_mod { format!("{}\n\nDrag · Shift fine · Double-click reset · Right-click menu · Ctrl+click type\nDrop a cable here to modulate it{}", kd.tip, if mods.is_empty() { "" } else { " · Alt+drag: modulation amount" }) } else { format!("{}\n\nDrag · Shift fine · Double-click reset · Ctrl+click type", kd.tip) };
+        let tip = if can_mod { format!("{}\n\nDrag · Shift fine · Double-click reset · Right-click menu · Ctrl+click type\nDrop a cable here to modulate it{}", kd.tip, if mods.is_empty() { "" } else { "\nModulation amount: drag the coloured pill under the knob (or Alt+drag the knob)" }) } else { format!("{}\n\nDrag · Shift fine · Double-click reset · Ctrl+click type", kd.tip) };
         resp.on_hover_text(tip);
     }
 }
@@ -318,7 +377,7 @@ pub fn jack(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, src: usize, c: Pos2, l
                         }
                     });
                     g.focus_mod = Some((s, dd));
-                    g.say(format!("{} → {}   (Alt+drag the knob: amount)", SRC_NAMES[src], dest_name(d)), cx.now);
+                    g.say(format!("{} → {}   (drag the pill under the knob: amount)", SRC_NAMES[src], dest_name(d)), cx.now);
                     g.cable_back = Some((src, cb.end, cb.from, cx.now));
                 }
                 Some(_) => g.say("All 32 modulation slots are in use", cx.now),
