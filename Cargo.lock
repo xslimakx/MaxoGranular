@@ -1577,7 +1577,7 @@ dependencies = [
 
 [[package]]
 name = "maxogranular"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "baseview",
  "dirs",

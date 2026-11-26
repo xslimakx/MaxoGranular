@@ -103,7 +103,8 @@ pub fn knob(ui: &mut Ui, cx: &Cx, g: &mut Gui, tex: &Tex, d: usize, c: Pos2, r: 
                 }
             });
         } else {
-            let raw = ui.data(|dd| dd.get_temp::<f32>(raw_id)).unwrap_or(norm) + dv;
+            // clamped: dragging past the end and back turns the knob back at once
+            let raw = (ui.data(|dd| dd.get_temp::<f32>(raw_id)).unwrap_or(norm) + dv).clamp(0.0, 1.0);
             ui.data_mut(|dd| dd.insert_temp(raw_id, raw));
             cx.setter.set_parameter_normalized(prm, raw.clamp(0.0, 1.0));
         }

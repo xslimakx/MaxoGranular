@@ -429,6 +429,12 @@ pub struct Engine {
     grains_alive: usize,
     newest: usize,
     k_glide_delay: f32,
+    /// analyzer taps (mono, all voices): this sample before / after the filter, and the rings
+    ana_acc: [f32; 2],
+    ana_pre: Vec<f32>,
+    ana_post: Vec<f32>,
+    ana_pos: usize,
+    ana_count: u64,
 }
 
 pub fn make_windows() -> Box<[[f32; WIN_N]; 6]> {
@@ -515,6 +521,11 @@ impl Engine {
             grains_alive: 0,
             newest: 0,
             k_glide_delay: coef_ms(60.0, sr),
+            ana_acc: [0.0; 2],
+            ana_pre: vec![0.0; crate::ANA_N],
+            ana_post: vec![0.0; crate::ANA_N],
+            ana_pos: 0,
+            ana_count: 0,
         }
     }
 
@@ -918,6 +929,7 @@ impl Engine {
 
         let mut dry = [0.0f32; 2];
         let mut wet = [0.0f32; 2];
+        self.ana_acc = [0.0; 2];
         let dt_ms = 1000.0 / sr;
         let glide = self.base_p[M_GLIDE];
         let kg = if glide < 1.0 { 1.0 } else { coef_ms(glide, sr) };
@@ -1036,6 +1048,7 @@ impl Engine {
                     by[1] += vout[l][1];
                 }
             }
+            let pre_f = [to_f[0] + by[0], to_f[1] + by[1]];
             if self.snap.filter_on {
                 let drive = v.vals[F_DRIVE];
                 let mix = v.vals[F_MIX];
@@ -1064,6 +1077,8 @@ impl Engine {
             for ch in 0..2 {
                 let s = (to_f[ch] + by[ch]) * g;
                 dry[ch] += s;
+                self.ana_acc[0] += pre_f[ch] * g * 0.5;
+                self.ana_acc[1] += s * 0.5;
             }
             // voice end
             if v.env[0].stage == Stage::Idle || v.steal <= 0.0 {
@@ -1101,6 +1116,11 @@ impl Engine {
         }
         let target = db2lin(bp[M_VOLUME]);
         self.vol += (target - self.vol) * 0.002;
+        let (a0, a1) = (self.ana_acc[0] * self.vol, self.ana_acc[1] * self.vol);
+        self.ana_pre[self.ana_pos] = if a0.is_finite() { a0 } else { 0.0 };
+        self.ana_post[self.ana_pos] = if a1.is_finite() { a1 } else { 0.0 };
+        self.ana_pos = (self.ana_pos + 1) % crate::ANA_N;
+        self.ana_count += 1;
         let mut out = [(dry[0] + wet[0]) * self.vol, (dry[1] + wet[1]) * self.vol];
         for o in out.iter_mut() {
             *o = if o.is_finite() { safe(*o) } else { 0.0 };
@@ -1142,6 +1162,15 @@ impl Engine {
 
     pub fn end_block(&mut self, shared: &Shared) {
         shared.clock.store(self.clock, Ordering::Relaxed);
+        // analyzer: never wait for the GUI
+        if let Some(mut a) = shared.ana.try_lock() {
+            if a.count != self.ana_count {
+                a.pre.copy_from_slice(&self.ana_pre);
+                a.post.copy_from_slice(&self.ana_post);
+                a.pos = self.ana_pos;
+                a.count = self.ana_count;
+            }
+        }
         let i = self.newest;
         let v = &self.voices[i];
         let alive = self.voices.iter().filter(|v| v.active).count();

@@ -321,6 +321,19 @@ pub struct Shared {
     pub ui_ctl: AtomicU32,
     pub tempo: AtomicF32,
     pub delay_ms: AtomicF32,
+    /// the last ANA_N samples (mono) before and after the filter, for the filter screen's analyzer
+    pub ana: Mutex<Ana>,
+}
+
+pub const ANA_N: usize = 4096;
+
+/// ring buffers for the analyzer; `pos` is where the next sample goes
+pub struct Ana {
+    pub pre: Vec<f32>,
+    pub post: Vec<f32>,
+    pub pos: usize,
+    /// samples written in total (the GUI sees whether something new came)
+    pub count: u64,
 }
 
 impl Default for Shared {
@@ -365,6 +378,7 @@ impl Default for Shared {
             ui_ctl: AtomicU32::new(0),
             tempo: AtomicF32::new(120.0),
             delay_ms: AtomicF32::new(0.0),
+            ana: Mutex::new(Ana { pre: vec![0.0; ANA_N], post: vec![0.0; ANA_N], pos: 0, count: 0 }),
         }
     }
 }

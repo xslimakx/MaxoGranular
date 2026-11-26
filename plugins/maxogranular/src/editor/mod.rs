@@ -98,6 +98,10 @@ pub struct Gui {
     /// a file dialog is open for layer n; its answer lands here
     pub dialog: Option<(usize, Arc<parking_lot::Mutex<Option<Result<Option<std::path::PathBuf>, ()>>>>)>,
     pub last_dir: Option<std::path::PathBuf>,
+    /// filter screen analyzer: smoothed spectra (dB, per FFT bin) before / after the filter
+    pub ana: Option<sections::AnaView>,
+    /// filter screen drag: (cutoff norm, resonance norm, press position)
+    pub fdrag: Option<(f32, f32, Pos2)>,
 }
 
 impl Gui {
@@ -108,6 +112,8 @@ impl Gui {
             t_open: -1.0,
             last: 0.0,
             tab: 0,
+            ana: None,
+            fdrag: None,
             cable: None,
             cable_back: None,
             targets: Vec::new(),
